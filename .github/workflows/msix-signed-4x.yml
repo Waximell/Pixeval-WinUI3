@@ -37,6 +37,17 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Report SDK and Roslyn version
+        run: |
+          dotnet --list-sdks
+          "resolved: $(dotnet --version)"
+          Get-ChildItem "$env:ProgramFiles\dotnet\sdk" -Directory | ForEach-Object {
+            $dll = Join-Path $_.FullName "Roslyn\bincore\Microsoft.CodeAnalysis.dll"
+            if (Test-Path $dll) {
+              "{0} -> Roslyn {1}" -f $_.Name, (Get-Item $dll).VersionInfo.FileVersion
+            }
+          }
+
       - name: Fix NuGet sources
         run: |
           @'
