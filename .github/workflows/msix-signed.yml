@@ -1,0 +1,159 @@
+name: Signed MSIX
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 5.1.0 (package version becomes <version>.0)"
+        required: false
+        default: "5.1.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-msix-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CONFIGURATION: Release
+
+jobs:
+  windows:
+    name: Signed MSIX ${{ matrix.architecture }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runtime: win-x64
+            publish_aot: true
+          - architecture: x86
+            runtime: win-x86
+            publish_aot: false
+          - architecture: arm64
+            runtime: win-arm64
+            publish_aot: true
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          filter: tree:0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        env:
+          PUBLISH_AOT: ${{ matrix.publish_aot }}
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          [string[]] $aotArguments = @()
+          if ($env:PUBLISH_AOT -eq 'false') {
+            $aotArguments += '-p:PublishAot=false'
+          }
+
+          dotnet restore src/Pixeval.Desktop/Pixeval.Desktop.csproj `
+            -r $env:RUNTIME `
+            -p:Configuration=$env:CONFIGURATION `
+            @aotArguments
+
+      - name: Publish
+        id: publish
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}.0
+          PUBLISH_AOT: ${{ matrix.publish_aot }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RUNTIME: ${{ matrix.runtime }}
+        run: |
+          [string[]] $aotArguments = @()
+          if ($env:PUBLISH_AOT -eq 'false') {
+            $aotArguments += '-p:PublishAot=false'
+          }
+
+          $publishDirectory = Join-Path $env:RUNNER_TEMP "pixeval-$env:RUNTIME"
+          dotnet publish src/Pixeval.Desktop/Pixeval.Desktop.csproj `
+            -c $env:CONFIGURATION `
+            -r $env:RUNTIME `
+            --no-restore `
+            --self-contained true `
+            -o $publishDirectory `
+            -p:DebugSymbols=false `
+            -p:DebugType=None `
+            -p:Version=$env:RELEASE_VERSION `
+            -p:AssemblyVersion=$env:PACKAGE_VERSION `
+            -p:FileVersion=$env:PACKAGE_VERSION `
+            -p:InformationalVersion=$env:RELEASE_VERSION `
+            @aotArguments
+
+          "directory=$publishDirectory" >> $env:GITHUB_OUTPUT
+
+      - name: Package unsigned MSIX
+        id: package
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+          PACKAGE_VERSION: ${{ inputs.version }}.0
+          PUBLISH_DIRECTORY: ${{ steps.publish.outputs.directory }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $releaseDirectory = Join-Path $PWD "artifacts\release"
+          $null = New-Item -ItemType Directory -Force -Path $releaseDirectory
+
+          & scripts/package-msix.ps1 `
+            -PublishDirectory $env:PUBLISH_DIRECTORY `
+            -Architecture $env:ARCHITECTURE `
+            -ReleaseVersion $env:RELEASE_VERSION `
+            -PackageVersion $env:PACKAGE_VERSION `
+            -OutputDirectory $releaseDirectory
+
+          $msix = Join-Path $releaseDirectory "Pixeval-$($env:RELEASE_VERSION)-windows-$($env:ARCHITECTURE)-unsigned.msix"
+          if (-not (Test-Path -LiteralPath $msix)) {
+            throw "Expected MSIX was not produced: $msix"
+          }
+
+          "msix=$msix" >> $env:GITHUB_OUTPUT
+
+      - name: Sign MSIX
+        id: sign
+        env:
+          MSIX_CERT_BASE64: ${{ secrets.MSIX_CERT_BASE64 }}
+          MSIX_CERT_PASSWORD: ${{ secrets.MSIX_CERT_PASSWORD }}
+          MSIX_PATH: ${{ steps.package.outputs.msix }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MSIX_CERT_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:MSIX_CERT_PASSWORD)) {
+            throw "MSIX_CERT_BASE64 / MSIX_CERT_PASSWORD secrets are not configured."
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:MSIX_CERT_BASE64))
+
+          $signtool = Get-ChildItem -LiteralPath (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin") `
+            -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match "\\x64\\signtool\.exe$" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $signtool) {
+            throw "signtool.exe was not found on the runner."
+          }
+
+          & $signtool.FullName sign /fd SHA256 /f $certPath /p $env:MSIX_CERT_PASSWORD $env:MSIX_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed with exit code $LASTEXITCODE."
+          }
+
+          $signedPath = $env:MSIX_PATH -replace '-unsigned\.msix$', '-signed.msix'
+          Move-Item -LiteralPath $env:MSIX_PATH -Destination $signedPath -Force
+          "msix=$signedPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload signed MSIX
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-msix-${{ matrix.architecture }}
+          path: ${{ steps.sign.outputs.msix }}
+          if-no-files-found: error
+          retention-days: 14
