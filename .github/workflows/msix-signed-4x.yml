@@ -1,0 +1,176 @@
+name: Release 4.3.23 signed
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CONFIGURATION: Release
+  RELEASE_VERSION: 4.3.23
+  RELEASE_TAG: v4.3.23-waximell
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [x64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          dotnet restore src/Pixeval/Pixeval.csproj `
+            -p:Platform=$env:PLATFORM `
+            -p:Configuration=$env:CONFIGURATION
+
+      - name: Build MSIX
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          msbuild src/Pixeval/Pixeval.csproj `
+            -t:Publish `
+            -p:Configuration=$env:CONFIGURATION `
+            -p:Platform=$env:PLATFORM `
+            -p:GenerateAppxPackageOnBuild=true `
+            -p:AppxBundle=Never `
+            -p:AppxPackageSigningEnabled=false `
+            -m
+
+      - name: Sign MSIX
+        id: sign
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          MSIX_CERT_BASE64: ${{ secrets.MSIX_CERT_BASE64 }}
+          MSIX_CERT_PASSWORD: ${{ secrets.MSIX_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MSIX_CERT_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:MSIX_CERT_PASSWORD)) {
+            throw "MSIX_CERT_BASE64 / MSIX_CERT_PASSWORD secrets are not configured."
+          }
+
+          $msix = Get-ChildItem -Path $PWD -Recurse -Filter *.msix -File |
+            Where-Object FullName -NotMatch "\\obj\\" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $msix) {
+            throw "No MSIX package was produced by the build."
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:MSIX_CERT_BASE64))
+
+          $signtool = Get-ChildItem -LiteralPath (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin") `
+            -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match "\\x64\\signtool\.exe$" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $signtool) {
+            throw "signtool.exe was not found on the runner."
+          }
+
+          $outDirectory = Join-Path $PWD "out"
+          $null = New-Item -ItemType Directory -Force -Path $outDirectory
+          $signedPath = Join-Path $outDirectory "Pixeval-$($env:RELEASE_VERSION)-$($env:PLATFORM)-signed.msix"
+          Copy-Item -LiteralPath $msix.FullName -Destination $signedPath -Force
+
+          & $signtool.FullName sign /fd SHA256 /f $certPath /p $env:MSIX_CERT_PASSWORD $signedPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed with exit code $LASTEXITCODE."
+          }
+
+          "msix=$signedPath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload MSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: msix-${{ matrix.platform }}
+          path: ${{ steps.sign.outputs.msix }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Bundle and release
+    needs: build
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download MSIX packages
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+          pattern: msix-*
+          merge-multiple: true
+
+      - name: Create signed bundle
+        id: bundle
+        env:
+          MSIX_CERT_BASE64: ${{ secrets.MSIX_CERT_BASE64 }}
+          MSIX_CERT_PASSWORD: ${{ secrets.MSIX_CERT_PASSWORD }}
+        run: |
+          $makeAppx = Get-ChildItem -LiteralPath (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin") `
+            -Filter makeappx.exe -Recurse |
+            Where-Object FullName -Match "\\x64\\makeappx\.exe$" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ($null -eq $makeAppx) {
+            throw "makeappx.exe was not found on the runner."
+          }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:MSIX_CERT_BASE64))
+
+          $bundlePath = Join-Path $PWD "Pixeval-$($env:RELEASE_VERSION).msixbundle"
+          & $makeAppx.FullName bundle /d (Join-Path $PWD "packages") /p $bundlePath /o
+          if ($LASTEXITCODE -ne 0) {
+            throw "makeappx bundle failed with exit code $LASTEXITCODE."
+          }
+
+          $signtool = Get-ChildItem -LiteralPath (Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin") `
+            -Filter signtool.exe -Recurse |
+            Where-Object FullName -Match "\\x64\\signtool\.exe$" |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          & $signtool.FullName sign /fd SHA256 /f $certPath /p $env:MSIX_CERT_PASSWORD $bundlePath
+          if ($LASTEXITCODE -ne 0) {
+            throw "signtool failed with exit code $LASTEXITCODE."
+          }
+
+          "bundle=$bundlePath" >> $env:GITHUB_OUTPUT
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            (Join-Path $PWD "packages\Pixeval-$($env:RELEASE_VERSION)-x64-signed.msix"),
+            (Join-Path $PWD "packages\Pixeval-$($env:RELEASE_VERSION)-arm64-signed.msix"),
+            "${{ steps.bundle.outputs.bundle }}"
+          )
+
+          gh release create $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:GITHUB_SHA `
+            --title "Pixeval $($env:RELEASE_VERSION) (WinUI3)" `
+            --notes "4.3.23 原版源码，仅替换包名与签名证书。" `
+            $assets
