@@ -49,9 +49,7 @@ try
     $assetSource = Join-Path $repositoryRoot "src\Pixeval.Desktop\Assets\Windows\MSIX"
     $assetDestination = Join-Path $packageRoot "Assets"
     $null = New-Item -ItemType Directory -Force -Path $assetDestination
-    Copy-Item -LiteralPath (Join-Path $assetSource "StoreLogo.png") -Destination $assetDestination
-    Copy-Item -LiteralPath (Join-Path $assetSource "Square44x44Logo.png") -Destination $assetDestination
-    Copy-Item -LiteralPath (Join-Path $assetSource "Square150x150Logo.png") -Destination $assetDestination
+    Copy-Item -Path (Join-Path $assetSource "*.png") -Destination $assetDestination
 
     $manifestTemplate = [IO.File]::ReadAllText(
         (Join-Path $assetSource "Package.appxmanifest.template"))
@@ -66,6 +64,46 @@ try
         (Join-Path $packageRoot "AppxManifest.xml"),
         $manifest,
         [Text.UTF8Encoding]::new($false))
+
+    $makePri = Get-Command MakePri.exe -ErrorAction SilentlyContinue
+    if ($null -eq $makePri)
+    {
+        $windowsKitRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+        $makePri = Get-ChildItem -LiteralPath $windowsKitRoot -Filter MakePri.exe -Recurse
+            | Where-Object FullName -Match "\\x64\\MakePri\.exe$"
+            | Sort-Object FullName -Descending
+            | Select-Object -First 1
+    }
+
+    if ($null -eq $makePri)
+    {
+        throw "MakePri.exe was not found. Install the Windows SDK on the build runner."
+    }
+
+    $makePriPath = if ($makePri -is [System.Management.Automation.CommandInfo])
+    {
+        $makePri.Source
+    }
+    else
+    {
+        $makePri.FullName
+    }
+
+    # The manifest refers to assets by bare file name, so the scale / targetsize /
+    # altform-unplated variants only resolve if a resource index ships next to it.
+    $priConfigPath = Join-Path $temporaryRoot "priconfig.xml"
+    & $makePriPath createconfig /cf $priConfigPath /dq zh-Hans /o
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "MakePri.exe createconfig failed with exit code $LASTEXITCODE."
+    }
+
+    $priPath = Join-Path $packageRoot "resources.pri"
+    & $makePriPath new /pr $packageRoot /cf $priConfigPath /of $priPath /o
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "MakePri.exe new failed with exit code $LASTEXITCODE."
+    }
 
     $makeAppx = Get-Command MakeAppx.exe -ErrorAction SilentlyContinue
     if ($null -eq $makeAppx)
