@@ -90,10 +90,11 @@ public sealed partial class MainPage
         // LoadRestrictedModeSettings();
         LoadAiShowSettings();
 
-        using var client = new HttpClient();
-        await AppInfo.AppVersion.GitHubCheckForUpdateAsync(client);
-        if (AppInfo.AppVersion.UpdateAvailable)
-            _viewModel.SettingsTag.ShowIconBadge = true;
+        // 本仓库是 4.3.23 的存档构建，不跟随上游 5.x 更新，禁用启动时的自动检查（手动检查保留）
+        // using var client = new HttpClient();
+        // await AppInfo.AppVersion.GitHubCheckForUpdateAsync(client);
+        // if (AppInfo.AppVersion.UpdateAvailable)
+        //     _viewModel.SettingsTag.ShowIconBadge = true;
         _viewModel.TryLoadAvatar();
         return;
 

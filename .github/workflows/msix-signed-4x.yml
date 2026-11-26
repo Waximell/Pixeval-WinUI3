@@ -12,7 +12,7 @@ permissions:
 env:
   CONFIGURATION: Release
   RELEASE_VERSION: 4.3.23
-  RELEASE_TAG: v4.3.23-waximell
+  RELEASE_TAG: v4.3.23-waximell-noautocheck
 
 jobs:
   build:
@@ -203,6 +203,6 @@ jobs:
           gh release create $env:RELEASE_TAG `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:GITHUB_SHA `
-            --title "Pixeval $($env:RELEASE_VERSION) (WinUI3)" `
-            --notes "4.3.23 原版源码，仅替换包名与签名证书。" `
+            --title "Pixeval $($env:RELEASE_VERSION) (WinUI3, 禁用自动检查更新)" `
+            --notes "4.3.23 原版源码，仅替换包名与签名证书；相对上一版仅禁用启动时的自动检查更新（手动检查保留）。" `
             $assets
