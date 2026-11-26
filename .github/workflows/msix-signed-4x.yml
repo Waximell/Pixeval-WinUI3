@@ -41,6 +41,11 @@ jobs:
         run: |
           dotnet --list-sdks
           "resolved: $(dotnet --version)"
+          "msbuild: $((& msbuild -version | Select-Object -Last 1).Trim())"
+          Get-ChildItem "$env:ProgramFiles\dotnet\sdk" -Directory | ForEach-Object {
+            $min = Join-Path $_.FullName "minimumMSBuildVersion"
+            if (Test-Path $min) { "{0} -> minMSBuild {1}" -f $_.Name, (Get-Content $min -Raw).Trim() }
+          }
           Get-ChildItem "$env:ProgramFiles\dotnet\sdk" -Directory | ForEach-Object {
             $dll = Join-Path $_.FullName "Roslyn\bincore\Microsoft.CodeAnalysis.dll"
             if (Test-Path $dll) {
