@@ -49,9 +49,7 @@ try
     $assetSource = Join-Path $repositoryRoot "src\Pixeval.Desktop\Assets\Windows\MSIX"
     $assetDestination = Join-Path $packageRoot "Assets"
     $null = New-Item -ItemType Directory -Force -Path $assetDestination
-    Copy-Item -LiteralPath (Join-Path $assetSource "StoreLogo.png") -Destination $assetDestination
-    Copy-Item -LiteralPath (Join-Path $assetSource "Square44x44Logo.png") -Destination $assetDestination
-    Copy-Item -LiteralPath (Join-Path $assetSource "Square150x150Logo.png") -Destination $assetDestination
+    Copy-Item -Path (Join-Path $assetSource "*.png") -Destination $assetDestination
 
     $manifestTemplate = [IO.File]::ReadAllText(
         (Join-Path $assetSource "Package.appxmanifest.template"))
