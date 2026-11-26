@@ -2,6 +2,9 @@ name: Release 4.3.23 signed
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - release/4.3.23
 
 permissions:
   contents: write
